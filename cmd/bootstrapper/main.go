@@ -1,27 +1,72 @@
 package main
 
 import (
-	"syscall"
-	"os"
-	"os/exec"
 	"log"
+	"os"
+	"os/exec"	
+	"syscall"
+
 	"golang.org/x/sys/unix"
 )
 
 func main() {
-cmd := exec.Command("/bin/sh")
 
+	if (len(os.Args) < 2) {
+		panic("Expected 'run' or 'child'")
+	}
 
-cmd.SysProcAttr = &syscall.SysProcAttr{
-	Cloneflags: unix.CLONE_NEWPID | unix.CLONE_NEWUTS,
+	switch os.Args[1] {
+		case "run":
+			parent()
+
+		case "child":
+			child()
+
+		default:
+			panic("an error occured...")
+
+	}
 }
 
-cmd.Stdin = os.Stdin
-cmd.Stdout = os.Stdout
-cmd.Stderr = os.Stderr
 
-if err := cmd.Run(); err != nil{
-	log.Fatalf("Failed to run isolated process: %v", err)
+func parent() {
+	cmd := exec.Command("/proc/self/exe", append([]string{"child"}, os.Args[2:]...)...)
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
+	}
+
+	if err := cmd.Run(); err != nil {
+		log.Fatal("Parent failed")
+	}
+
 }
+
+func child(){
+
+	// set hostname
+	if err := unix.Sethostname([]byte("myContainer")); err != nil {
+		log.Fatalf("Setting hostname failed: %v", err)
+	}
+		
+		// isolate mountspace
+		// src, target, filesystemtype, mountflag, data
+	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		log.Fatalf("Proc mount falied: %v", err)
+
+
+	}
+
+
+	// raw exec
+	// replaces the current process with /bin/switch
+
+	if err := unix.Exec("/bin/sh", []string{"/bin/sh"}, os.Environ()); err != nil {
+		log.Fatalf("Exec failed: %v", err)
+	}
 
 }
