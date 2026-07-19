@@ -48,25 +48,38 @@ func parent() {
 
 func child(){
 
+	// declare that the mount is private 
+	if err := unix.Mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
+		log.Fatalf("Private mount failed: %v", err)
+	}
+
 	// set hostname
 	if err := unix.Sethostname([]byte("myContainer")); err != nil {
 		log.Fatalf("Setting hostname failed: %v", err)
 	}
 		
+	if err := unix.Chroot("./rootfs"); err != nil {
+		log.Fatalf("Chroot failed: %v", err)
+	}
+
+
+	if err := os.Chdir("/"); err != nil {
+		log.Fatalf("Chdir failed: %v", err)
+	}
 		// isolate mountspace
 		// src, target, filesystemtype, mountflag, data
 	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
 		log.Fatalf("Proc mount falied: %v", err)
 
-
 	}
 
-
 	// raw exec
-	// replaces the current process with /bin/switch
+	// replaces the current process with /bin/sh
 
 	if err := unix.Exec("/bin/sh", []string{"/bin/sh"}, os.Environ()); err != nil {
 		log.Fatalf("Exec failed: %v", err)
 	}
+
+
 
 }
