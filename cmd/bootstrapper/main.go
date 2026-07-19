@@ -3,10 +3,12 @@ package main
 import (
 	"log"
 	"os"
-	"os/exec"	
+	"os/exec"
 	"syscall"
+	"strconv"
 
 	"golang.org/x/sys/unix"
+
 )
 
 func main() {
@@ -37,11 +39,42 @@ func parent() {
 	cmd.Stderr = os.Stderr
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
+		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS | unix.CLONE_NEWNET,
 	}
 
-	if err := cmd.Run(); err != nil {
-		log.Fatal("Parent failed")
+	if err := cmd.Start(); err != nil {
+		log.Fatal("Start failed")
+	}
+
+	containerPID := cmd.Process.Pid
+	log.Printf("Container started, Child PID on host: %d", containerPID)
+
+	cgroupPath := "/sys/fs/cgroup/bootstrapper"
+
+
+
+	if err := os.Mkdir(cgroupPath, 0755); err != nil && !os.IsExist(err) {
+		log.Fatalf("Error creating the folder: %v", err)
+	}
+
+	// apply limits(PIDs max, memory max and assign the process)
+	// limit - 20 concurrent process
+	if err := os.WriteFile(cgroupPath+"/pids.max", []byte("20"), 0644); err != nil {
+		log.Fatalf("Failed to set pids.max: %v", err)
+	}
+
+	// set memory to 30mb
+	if err := os.WriteFile(cgroupPath+"/memory.max", []byte("31457280"), 0644); err != nil {
+		log.Fatalf("Failed to set memory.max: %v", err)
+	}
+
+	pidStr := strconv.Itoa(containerPID)
+	if err := os.WriteFile(cgroupPath+"/cgroup.procs", []byte(pidStr), 0644); err != nil {
+		log.Fatalf("Failed to join cgroup: %v", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		log.Fatal("Wait failed")
 	}
 
 }
@@ -73,8 +106,13 @@ func child(){
 
 	}
 
+	//isolate sys mount
+	if err := unix.Mount("sysfs", "/sys", "/sysfs", 0, ""); err != nil {
+		log.Fatalf("Sys mount failed: %v", err)
+	}
+
 	// raw exec
-	// replaces the current process with /bin/sh
+	// replaces the current process with /in/sh
 
 	if err := unix.Exec("/bin/sh", []string{"/bin/sh"}, os.Environ()); err != nil {
 		log.Fatalf("Exec failed: %v", err)
