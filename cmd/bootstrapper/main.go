@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/vishvananda/netlink"
@@ -75,7 +76,11 @@ func parent() {
 
 	// create the link
 	if err := netlink.LinkAdd(bridge); err != nil {
-		log.Fatalf("Error creating link: %v", err)
+		// If the error is not "file exists", Crash.
+		if !strings.Contains(err.Error(), "file exists") {
+			log.Fatalf("Error creating link: %v", err)
+		}
+		// If "file exists", ignore
 	}
 
 	// parse the ip address
@@ -86,11 +91,54 @@ func parent() {
 
 	// attach the ip to the bridge
 	if err := netlink.AddrAdd(bridge, addr); err != nil {
-		log.Fatalf("Error attaching the ip address: %v", err)
+		if !strings.Contains(err.Error(), "file exists") {
+			log.Fatalf("Error attaching the ip address: %v", err)
+		}
 	}
 
 	if err := netlink.LinkSetUp(bridge); err != nil {
 		log.Fatalf("Error setting up the link: %v", err)
+	}
+
+	// define the veth pair
+	vethAttrs := netlink.NewLinkAttrs()
+	vethAttrs.Name = "veth-host"
+
+	veth := &netlink.Veth{
+		LinkAttrs: vethAttrs,
+		PeerName:  "veth-child",
+	}
+
+	// create veth pair on the host
+	if err := netlink.LinkAdd(veth); err != nil {
+		if !strings.Contains(err.Error(), "file exists") {
+			log.Fatalf("Error creating veth pair: %v", err)
+		}
+	}
+
+	//  Move veth-child into the container's network namespace
+	childLink, err := netlink.LinkByName("veth-child")
+	if err != nil {
+		log.Fatalf("Failed to find veth-child: %v", err)
+	}
+
+	if err := netlink.LinkSetNsPid(childLink, containerPID); err != nil {
+		log.Fatalf("Failed to move veth-child into namespace: %v", err)
+	}
+
+	// Attach veth-host to the br-boot bridge switch
+	hostLink, err := netlink.LinkByName("veth-host")
+	if err != nil {
+		log.Fatalf("Failed to find veth-host: %v", err)
+	}
+
+	if err := netlink.LinkSetMaster(hostLink, bridge); err != nil {
+		log.Fatalf("Failed to attach veth-host to bridge: %v", err)
+	}
+
+	// Bring veth-host up on the host
+	if err := netlink.LinkSetUp(hostLink); err != nil {
+		log.Fatalf("Failed to bring veth-host up: %v", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
