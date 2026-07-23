@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"net"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -32,11 +33,17 @@ func main() {
 }
 
 func parent() {
+	r, w, err := os.Pipe()
+	if err != nil {
+		log.Fatalf("Failed to create pipe: %v", err)
+	}
+
 	cmd := exec.Command("/proc/self/exe", append([]string{"child"}, os.Args[2:]...)...)
 
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.ExtraFiles = []*os.File{r}
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS | unix.CLONE_NEWNET,
@@ -44,6 +51,10 @@ func parent() {
 
 	if err := cmd.Start(); err != nil {
 		log.Fatal("Start failed")
+	}
+
+	if err := r.Close(); err != nil {
+		log.Fatal("r.Close() failed")
 	}
 
 	containerPID := cmd.Process.Pid
@@ -141,6 +152,14 @@ func parent() {
 		log.Fatalf("Failed to bring veth-host up: %v", err)
 	}
 
+	if _, err := w.Write([]byte("1")); err != nil {
+		log.Fatal("Write byte failed")
+	}
+
+	if err := w.Close(); err != nil {
+		log.Fatal("w.Close() failed")
+	}
+
 	if err := cmd.Wait(); err != nil {
 		log.Fatal("Wait failed")
 	}
@@ -148,6 +167,57 @@ func parent() {
 
 func child() {
 
+	// block operations
+	freezePipe := os.NewFile(uintptr(3), "pipe")
+	if freezePipe == nil {
+		log.Fatal("Freeze Pipe fd is invalid or missing")
+	}
+
+	buf := make([]byte,1)
+	// blocking system call to freeze the child
+	if _, err := freezePipe.Read(buf); err != nil {
+		log.Fatal("Failed to read from pipe")
+	}
+
+	freezePipe.Close()
+
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		log.Fatal("Failed to find lo")
+	}
+
+	vethChild, err := netlink.LinkByName("veth-child")
+
+	if err := netlink.LinkSetUp(lo); err != nil {
+		log.Fatal("Failed to bring lo UP")
+	}
+
+	addr, err := netlink.ParseAddr("10.0.0.2/24")
+	if err != nil {
+		log.Fatalf("Error parsing the ip address: %v", err)
+	}
+
+	if err := netlink.AddrAdd(vethChild, addr); err != nil {
+		log.Fatal("Failed to assign IP to veth-child")
+	}
+
+	if err := netlink.LinkSetUp(vethChild); err != nil {
+		log.Fatal("Failed to bring up addr")
+	}
+
+	route := &netlink.Route{
+ 		Scope:     netlink.SCOPE_UNIVERSE,
+    	LinkIndex: vethChild.Attrs().Index,
+    	Gw:        net.ParseIP("10.0.0.1"),
+	}
+
+
+
+	if err := netlink.RouteAdd(route); err != nil {
+		log.Fatalf("Failed to add to default route")
+	}
+
+	
 	// declare that the mount is private
 	if err := unix.Mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
 		log.Fatalf("Private mount failed: %v", err)
