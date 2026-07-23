@@ -265,6 +265,15 @@ func child() {
 
 	}
 
+	// Inject DNS Configuration
+	if err := os.MkdirAll("/etc", 0755); err != nil {
+		log.Fatalf("Failed to create /etc directory: %v", err)
+	}
+	
+	if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 8.8.8.8\n"), 0644); err != nil {
+		log.Fatalf("Failed to inject resolv.conf: %v", err)
+	}
+
 	//isolate sys mount
 	if err := unix.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
 		log.Fatalf("Sys mount failed: %v", err)
