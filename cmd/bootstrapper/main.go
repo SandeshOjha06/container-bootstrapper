@@ -110,6 +110,29 @@ func parent() {
 	if err := netlink.LinkSetUp(bridge); err != nil {
 		log.Fatalf("Error setting up the link: %v", err)
 	}
+	
+	// Enable IP forwarding
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644); err != nil {
+		log.Fatal("Enable IP forwarding")
+	}
+
+	// Configure NAT 
+	natCmd := exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE")
+	if err := natCmd.Run(); err != nil {
+		log.Fatalf("Failed to configure NAT masquerade: %v", err)
+	}
+
+	// tell the firewall to allow traffic to enter from the bridge
+	fwInCmd := exec.Command("iptables", "-A", "FORWARD", "-i", "br-boot", "-j", "ACCEPT")
+	if err := fwInCmd.Run(); err != nil {
+		log.Fatalf("Failed to allow forward in: %v", err)
+	}
+
+	// tell the firewall to allow traffic to exit to the bridge
+	fwOutCmd := exec.Command("iptables", "-A", "FORWARD", "-o", "br-boot", "-j", "ACCEPT")
+	if err := fwOutCmd.Run(); err != nil {
+		log.Fatalf("Failed to allow forward out: %v", err)
+	}
 
 	// define the veth pair
 	vethAttrs := netlink.NewLinkAttrs()
