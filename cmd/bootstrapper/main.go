@@ -184,8 +184,30 @@ func parent() {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		log.Fatal("Wait failed")
+		log.Println("Container exited with errors..")
+	} else {
+		log.Println("Container exited.")
 	}
+
+	log.Println("Starting teardown sequence...")
+
+	// Remove iptables rules
+	exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE").Run()
+	exec.Command("iptables", "-D", "FORWARD", "-i", "br-boot", "-j", "ACCEPT").Run()
+	exec.Command("iptables", "-D", "FORWARD", "-o", "br-boot", "-j", "ACCEPT").Run()
+
+	//Destroy the virtual switch
+	if err := netlink.LinkDel(bridge); err != nil {
+		log.Printf("Warning: Failed to delete bridge: %v", err)
+	}
+
+	//Delete the cgroup
+	// The process must be dead before the kernel allows cgroup deletion
+	if err := os.Remove("/sys/fs/cgroup/bootstrapper"); err != nil {
+		log.Printf("Warning: Failed to remove cgroup: %v", err)
+	}
+
+	log.Println("Teardown complete. Host environment restored.")
 }
 
 func child() {
