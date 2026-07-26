@@ -292,13 +292,37 @@ func child() {
 		log.Fatalf("OverlayFS mount failed: %v", err)
 	}
 
-	//  Jail the process inside the NEW merged filesystem, NOT the basefs
-	if err := unix.Chroot("./merged"); err != nil {
-		log.Fatalf("Chroot failed: %v", err)
+
+	// Bind mounting the merged directory to itself satisfies this strict kernel rule.
+	if err := unix.Mount("./merged", "./merged", "", unix.MS_BIND, ""); err != nil {
+		log.Fatalf("Bind mount failed: %v", err)
 	}
 
+	//  Create a temporary directory to hold the old host root
+	putOld := "./merged/put_old"
+	if err := os.MkdirAll(putOld, 0700); err != nil {
+		log.Fatalf("Failed to create put_old directory: %v", err)
+	}
+
+	//Pivot the root, this swaps the mount points at the kernel level.
+	if err := unix.PivotRoot("./merged", putOld); err != nil {
+		log.Fatalf("PivotRoot failed: %v", err)
+	}
+
+	//  Update the current working directory to the new root
 	if err := os.Chdir("/"); err != nil {
 		log.Fatalf("Chdir failed: %v", err)
+	}
+
+	//  Unmount the old host root so the container has zero access to it
+	putOldInside := "/put_old"
+	if err := unix.Unmount(putOldInside, unix.MNT_DETACH); err != nil {
+		log.Fatalf("Unmount put_old failed: %v", err)
+	}
+
+	// Delete the temporary folder
+	if err := os.Remove(putOldInside); err != nil {
+		log.Fatalf("Failed to remove put_old: %v", err)
 	}
 
 	// isolate mountspace
