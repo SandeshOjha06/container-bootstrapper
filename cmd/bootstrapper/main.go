@@ -1,15 +1,15 @@
 package main
 
 import (
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
-	"net"
-	"io"
-	"net/http"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -115,13 +115,13 @@ func parent() {
 	if err := netlink.LinkSetUp(bridge); err != nil {
 		log.Fatalf("Error setting up the link: %v", err)
 	}
-	
+
 	// Enable IP forwarding
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644); err != nil {
 		log.Fatal("Enable IP forwarding")
 	}
 
-	// Configure NAT 
+	// Configure NAT
 	natCmd := exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE")
 	if err := natCmd.Run(); err != nil {
 		log.Fatalf("Failed to configure NAT masquerade: %v", err)
@@ -212,6 +212,10 @@ func parent() {
 		log.Printf("Warning: Failed to remove cgroup: %v", err)
 	}
 
+	os.RemoveAll("./upper")
+	os.RemoveAll("./work")
+	os.RemoveAll("./merged")
+
 	log.Println("Teardown complete. Host environment restored.")
 }
 
@@ -223,7 +227,7 @@ func child() {
 		log.Fatal("Freeze Pipe fd is invalid or missing")
 	}
 
-	buf := make([]byte,1)
+	buf := make([]byte, 1)
 	// blocking system call to freeze the child
 	if _, err := freezePipe.Read(buf); err != nil {
 		log.Fatal("Failed to read from pipe")
@@ -256,18 +260,15 @@ func child() {
 	}
 
 	route := &netlink.Route{
- 		Scope:     netlink.SCOPE_UNIVERSE,
-    	LinkIndex: vethChild.Attrs().Index,
-    	Gw:        net.ParseIP("10.0.0.1"),
+		Scope:     netlink.SCOPE_UNIVERSE,
+		LinkIndex: vethChild.Attrs().Index,
+		Gw:        net.ParseIP("10.0.0.1"),
 	}
-
-
 
 	if err := netlink.RouteAdd(route); err != nil {
 		log.Fatalf("Failed to add to default route")
 	}
 
-	
 	// declare that the mount is private
 	if err := unix.Mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
 		log.Fatalf("Private mount failed: %v", err)
@@ -278,13 +279,28 @@ func child() {
 		log.Fatalf("Setting hostname failed: %v", err)
 	}
 
-	if err := unix.Chroot("./rootfs"); err != nil {
+	//  Create the necessary OverlayFS directories
+	for _, dir := range []string{"upper", "work", "merged"} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Fatalf("Failed to create %s dir: %v", dir, err)
+		}
+	}
+
+	//  Instruct the kernel to merge them
+	overlayOpts := "lowerdir=./basefs,upperdir=./upper,workdir=./work"
+	if err := unix.Mount("overlay", "./merged", "overlay", 0, overlayOpts); err != nil {
+		log.Fatalf("OverlayFS mount failed: %v", err)
+	}
+
+	//  Jail the process inside the NEW merged filesystem, NOT the basefs
+	if err := unix.Chroot("./merged"); err != nil {
 		log.Fatalf("Chroot failed: %v", err)
 	}
 
 	if err := os.Chdir("/"); err != nil {
 		log.Fatalf("Chdir failed: %v", err)
 	}
+
 	// isolate mountspace
 	// src, target, filesystemtype, mountflag, data
 	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
@@ -296,7 +312,7 @@ func child() {
 	if err := os.MkdirAll("/etc", 0755); err != nil {
 		log.Fatalf("Failed to create /etc directory: %v", err)
 	}
-	
+
 	if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 8.8.8.8\n"), 0644); err != nil {
 		log.Fatalf("Failed to inject resolv.conf: %v", err)
 	}
@@ -316,11 +332,11 @@ func child() {
 }
 
 func prepareRootFS() {
-	if _, err := os.Stat("./rootfs"); err == nil {
+	if _, err := os.Stat("./basefs"); err == nil {
 		return
 	}
 
-	log.Println("Downloading Alpine Linux rootfs...")
+	log.Println("Downloading Alpine Linux basefs...")
 
 	tarURL := "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.4-x86_64.tar.gz"
 
@@ -346,12 +362,12 @@ func prepareRootFS() {
 	}
 
 	// Extract the FileSystem
-	log.Println("Extracting rootfs...")
-	if err := os.MkdirAll("rootfs", 0755); err != nil {
+	log.Println("Extracting basefs...")
+	if err := os.MkdirAll("basefs", 0755); err != nil {
 		log.Fatalf("Failed to extraxt the file system: %v", err)
 	}
 
-	tarCmd := exec.Command("tar", "-xzf", tarPath, "-C", "rootfs")
+	tarCmd := exec.Command("tar", "-xzf", tarPath, "-C", "basefs")
 	if err := tarCmd.Run(); err != nil {
 		log.Fatalf("Failed to extract tarball: %v", err)
 	}
