@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"net"
+	"io"
+	"net/http"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -33,6 +35,9 @@ func main() {
 }
 
 func parent() {
+
+	prepareRootFS()
+
 	r, w, err := os.Pipe()
 	if err != nil {
 		log.Fatalf("Failed to create pipe: %v", err)
@@ -308,4 +313,48 @@ func child() {
 		log.Fatalf("Exec failed: %v", err)
 	}
 
+}
+
+func prepareRootFS() {
+	if _, err := os.Stat("./rootfs"); err == nil {
+		return
+	}
+
+	log.Println("Downloading Alpine Linux rootfs...")
+
+	tarURL := "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.4-x86_64.tar.gz"
+
+	tarPath := "alpine-rootfs.tar.gz"
+
+	// download the tarball
+
+	resp, err := http.Get(tarURL)
+	if err != nil {
+		log.Fatalf("Failed to download Alpine: %v", err)
+	}
+	defer resp.Body.Close()
+
+	outFile, err := os.Create(tarPath)
+	if err != nil {
+		log.Fatalf("Failed to create tar file: %v", err)
+	}
+	defer outFile.Close()
+
+	// copy to drive
+	if _, err := io.Copy(outFile, resp.Body); err != nil {
+		log.Fatalf("Failed to save the file: %v", err)
+	}
+
+	// Extract the FileSystem
+	log.Println("Extracting rootfs...")
+	if err := os.MkdirAll("rootfs", 0755); err != nil {
+		log.Fatalf("Failed to extraxt the file system: %v", err)
+	}
+
+	tarCmd := exec.Command("tar", "-xzf", tarPath, "-C", "rootfs")
+	if err := tarCmd.Run(); err != nil {
+		log.Fatalf("Failed to extract tarball: %v", err)
+	}
+
+	log.Println("Rootfs provisioned successfully.")
 }
