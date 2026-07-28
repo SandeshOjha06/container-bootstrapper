@@ -1,5 +1,7 @@
 package main
 
+import "C"
+
 import (
 	"io"
 	"log"
@@ -18,7 +20,7 @@ import (
 func main() {
 
 	if len(os.Args) < 2 {
-		panic("Expected 'run' or 'child'")
+		panic("Expected 'run', 'child', or 'exec'")
 	}
 
 	switch os.Args[1] {
@@ -28,9 +30,30 @@ func main() {
 	case "child":
 		child()
 
+	case "exec":
+		if len(os.Args) < 3 {
+			log.Fatal("Please provide the container PID: ./bootstrapper exec <pid>")
+		}
+		execCmd(os.Args[2])
+
 	default:
 		panic("an error occured...")
 
+	}
+}
+
+func execCmd(pid string) {
+	log.Printf("Injecting shell into container PID: %s", pid)
+
+	cmd := exec.Command("/proc/self/exe")
+	cmd.Env = append(os.Environ(), "BOOTSTRAPPER_EXEC_PID="+pid)
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Exec failed: %v", err)
 	}
 }
 
@@ -64,6 +87,10 @@ func parent() {
 
 	containerPID := cmd.Process.Pid
 	log.Printf("Container started, Child PID on host: %d", containerPID)
+
+	if err := os.WriteFile("/tmp/bootstrapper.pid", []byte(strconv.Itoa(containerPID)), 0644); err != nil {
+		log.Printf("Warning: Failed to write PID file: %v", err)
+	}
 
 	cgroupPath := "/sys/fs/cgroup/bootstrapper"
 
@@ -215,6 +242,7 @@ func parent() {
 	os.RemoveAll("./upper")
 	os.RemoveAll("./work")
 	os.RemoveAll("./merged")
+	os.Remove("/tmp/bootstrapper.pid")
 
 	log.Println("Teardown complete. Host environment restored.")
 }
@@ -291,7 +319,6 @@ func child() {
 	if err := unix.Mount("overlay", "./merged", "overlay", 0, overlayOpts); err != nil {
 		log.Fatalf("OverlayFS mount failed: %v", err)
 	}
-
 
 	// Bind mounting the merged directory to itself satisfies this strict kernel rule.
 	if err := unix.Mount("./merged", "./merged", "", unix.MS_BIND, ""); err != nil {
